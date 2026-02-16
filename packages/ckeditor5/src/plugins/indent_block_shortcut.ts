@@ -24,6 +24,14 @@ export default class IndentBlockShortcutPlugin extends Plugin {
                 cancel();
             }
         } );
+
+        this.editor.keystrokes.set( 'Shift+C', ( _, cancel ) => {
+            const command = this.editor.commands.get( 'code' );
+            if (command && command.isEnabled) {
+                command.execute();
+                cancel();
+            }
+        } );
     }
 
     // in table TAB should switch cells
