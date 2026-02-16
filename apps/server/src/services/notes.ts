@@ -20,6 +20,7 @@ import entityChangesService from "./entity_changes.js";
 import eventService from "./events.js";
 import htmlSanitizer from "./html_sanitizer.js";
 import imageService from "./image.js";
+import markdownService from "./import/markdown.js";
 import noteTypesService from "./note_types.js";
 import type { NoteParams } from "./note-interface.js";
 import optionService from "./options.js";
@@ -229,7 +230,12 @@ function createNewNote(params: NoteParams): {
                 }).save();
             }
 
-            note.setContent(params.content);
+            if (params.isMarkdown && typeof params.content === "string") {
+                const htmlContent = markdownService.renderToHtml(params.content as string, params.title);
+                note.setContent(htmlContent);
+            } else {
+                note.setContent(params.content);
+            }
 
             branch = new BBranch({
                 noteId: note.noteId,

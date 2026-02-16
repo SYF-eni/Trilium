@@ -16,6 +16,10 @@ export interface NoteParams {
     isProtected?: boolean;
     /** default is false */
     isExpanded?: boolean;
+
+    // Indique si le contenu est du markdown. Si true, le contenu est traité comme du markdown et rendu en conséquence. Si false, le contenu est traité comme du texte brut ou du HTML selon le type de note. Par exemple, pour une note de type "text", le contenu sera traité comme du texte brut, tandis que pour une note de type "code", le contenu sera traité comme du code source.
+    isMarkdown?: boolean;
+    
     /** default is empty string */
     prefix?: string;
     /** default is the last existing notePosition in a parent + 10 */
