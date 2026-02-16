@@ -1,0 +1,29 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug Trilium Server",
+            "type": "node",
+            "request": "launch",
+            "program": "${workspaceFolder}/node_modules/tsx/dist/cli.mjs",
+            "args": ["--inspect", "${workspaceFolder}/apps/server/src/main.ts"],
+            "env": {
+                "NODE_ENV": "development",
+                "TRILIUM_ENV": "dev",
+                "TRILIUM_DATA_DIR": "data",
+                "TRILIUM_RESOURCE_DIR": "src"
+            },
+            "cwd": "${workspaceFolder}/apps/server",
+            "console": "integratedTerminal",
+            "skipFiles": [
+                "<node_internals>/**",
+                "**/node_modules/**"
+            ],
+            "sourceMaps": true,
+            "resolveSourceMapLocations": [
+                "${workspaceFolder}/**",
+                "!**/node_modules/**"
+            ]
+        }
+    ]
+}
