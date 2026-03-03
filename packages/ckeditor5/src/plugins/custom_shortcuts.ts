@@ -1,4 +1,4 @@
-import { ModelDocumentFragment, ModelElement, Plugin, ModelPosition, ViewDocumentTabEvent, isWidget } from "ckeditor5";
+import { Plugin } from "ckeditor5";
 
 export default class CustomShortcutPlugin extends Plugin {
     init() {
