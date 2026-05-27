@@ -1,6 +1,6 @@
 import utils from "../../../services/utils.js";
 import options from "../../../services/options.js";
-import IconAlignCenter from "@ckeditor/ckeditor5-icons/theme/icons/align-center.svg?raw";
+import { IconAlignCenter } from "@ckeditor/ckeditor5-icons";
 
 const TEXT_FORMATTING_GROUP = {
     label: "Text formatting",
@@ -76,7 +76,7 @@ export function buildClassicToolbar(multilineToolbar: boolean) {
                 {
                     label: "Insert",
                     icon: "plus",
-                    items: ["imageUpload", "|", "link", "bookmark", "internallink", "includeNote", "|", "specialCharacters", "emoji", "math", "mermaid", "horizontalLine", "pageBreak", "dateTime"]
+                    items: ["imageUpload", "|", "link", "bookmark", "internallink", "includeNote", "linkEmbed", "|", "specialCharacters", "emoji", "math", "mermaid", "horizontalLine", "pageBreak", "dateTime"]
                 },
                 "|",
                 buildAlignmentToolbar(),
@@ -133,7 +133,7 @@ export function buildFloatingToolbar() {
             {
                 label: "Insert",
                 icon: "plus",
-                items: ["link", "bookmark", "internallink", "includeNote", "|", "math", "mermaid", "horizontalLine", "pageBreak", "dateTime"]
+                items: ["link", "bookmark", "internallink", "includeNote", "linkEmbed", "|", "math", "mermaid", "horizontalLine", "pageBreak", "dateTime"]
             },
             "|",
             buildAlignmentToolbar(),

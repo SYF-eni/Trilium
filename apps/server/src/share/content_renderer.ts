@@ -1,5 +1,5 @@
-import { sanitizeUrl } from "@braintree/sanitize-url";
-import { renderSpreadsheetToHtml } from "@triliumnext/commons";
+import { extractYouTubeVideoId, renderSpreadsheetToHtml, renderToHtml as renderMarkdownToHtml } from "@triliumnext/commons";
+import { icon_packs as iconPackService, sanitize, task_states, utils } from "@triliumnext/core";
 import { highlightAuto } from "@triliumnext/highlightjs";
 import ejs from "ejs";
 import escapeHtml from "escape-html";
@@ -13,10 +13,9 @@ import BAttachment from '../becca/entities/battachment.js';
 import type BBranch from "../becca/entities/bbranch.js";
 import BNote from "../becca/entities/bnote.js";
 import assetPath, { assetUrlFragment } from "../services/asset_path.js";
-import { generateCss, getIconPacks, MIME_TO_EXTENSION_MAPPINGS, ProcessedIconPack } from "../services/icon_packs.js";
 import log from "../services/log.js";
 import options from "../services/options.js";
-import utils, { getResourceDir, isDev, safeExtractMessageAndStackFromError } from "../services/utils.js";
+import { getResourceDir, isDev } from "../services/utils.js";
 import SAttachment from "./shaca/entities/sattachment.js";
 import SBranch from "./shaca/entities/sbranch.js";
 import type SNote from "./shaca/entities/snote.js";
@@ -31,7 +30,7 @@ const templateCache: Map<string, string> = new Map();
  */
 export interface Result {
     header: string;
-    content: string | Buffer | undefined;
+    content: string | Uint8Array | undefined;
     /** Set to `true` if the provided content should be rendered as empty. */
     isEmpty?: boolean;
 }
@@ -70,7 +69,7 @@ function getSharedSubTreeRoot(note: SNote | BNote | undefined): Subroot {
     return getSharedSubTreeRoot(parentBranch.getParentNote());
 }
 
-export function renderNoteForExport(note: BNote, parentBranch: BBranch, basePath: string, ancestors: string[], iconPacks: ProcessedIconPack[]) {
+export function renderNoteForExport(note: BNote, parentBranch: BBranch, basePath: string, ancestors: string[], iconPacks: iconPackService.ProcessedIconPack[]) {
     const subRoot: Subroot = {
         branch: parentBranch,
         note: parentBranch.getNote()
@@ -96,7 +95,10 @@ export function renderNoteForExport(note: BNote, parentBranch: BBranch, basePath
         faviconUrl: `${basePath}favicon.ico`,
         ancestors,
         isStatic: true,
-        iconPackCss: iconPacks.map(p => generateCss(p, `${basePath}assets/icon-pack-${p.prefix.toLowerCase()}.${MIME_TO_EXTENSION_MAPPINGS[p.fontMime]}`))
+        iconPackCss: [
+            ...iconPacks.map(p => iconPackService.generateCss(p, `${basePath}assets/icon-pack-${p.prefix.toLowerCase()}.${iconPackService.MIME_TO_EXTENSION_MAPPINGS[p.fontMime]}`)),
+            task_states.generateTaskStateCss()
+        ]
             .filter(Boolean)
             .join("\n\n"),
         iconPackSupportedPrefixes: iconPacks.map(p => p.prefix)
@@ -137,7 +139,7 @@ export function renderNoteContent(note: SNote) {
 
     const customLogoId = note.getRelation("shareLogo")?.value;
     const logoUrl = customLogoId ? `api/images/${customLogoId}/image.png` : `../${assetUrlFragment}/images/icon-color.svg`;
-    const iconPacks = getIconPacks().filter(p => p.builtin || !!shaca.notes[p.manifestNoteId]);
+    const iconPacks = iconPackService.getIconPacks().filter(p => p.builtin || !!shaca.notes[p.manifestNoteId]);
 
     return renderNoteContentInternal(note, {
         subRoot,
@@ -148,10 +150,13 @@ export function renderNoteContent(note: SNote) {
         ancestors,
         isStatic: false,
         faviconUrl: note.hasRelation("shareFavicon") ? `api/notes/${note.getRelationValue("shareFavicon")}/download` : `../favicon.ico`,
-        iconPackCss: iconPacks.map(p => generateCss(p, p.builtin
-            ? `/share/assets/fonts/${p.fontAttachmentId}.${MIME_TO_EXTENSION_MAPPINGS[p.fontMime]}`
-            : `/share/api/attachments/${p.fontAttachmentId}/download`
-        ))
+        iconPackCss: [
+            ...iconPacks.map(p => iconPackService.generateCss(p, p.builtin
+                ? `assets/fonts/${p.fontAttachmentId}.${iconPackService.MIME_TO_EXTENSION_MAPPINGS[p.fontMime]}`
+                : `api/attachments/${p.fontAttachmentId}/download`
+            )),
+            task_states.generateTaskStateCss()
+        ]
             .filter(Boolean)
             .join("\n\n"),
         iconPackSupportedPrefixes: iconPacks.map(p => p.prefix)
@@ -224,7 +229,7 @@ function renderNoteContentInternal(note: SNote | BNote, renderArgs: RenderArgs) 
                     return ejs.render(content, opts, { includer });
                 }
             } catch (e: unknown) {
-                const [errMessage, errStack] = safeExtractMessageAndStackFromError(e);
+                const [errMessage, errStack] = utils.safeExtractMessageAndStackFromError(e);
                 log.error(`Rendering user provided share template (${templateId}) threw exception ${errMessage} with stacktrace: ${errStack}`);
             }
         }
@@ -275,6 +280,8 @@ export function getContent(note: SNote | BNote) {
 
     if (note.type === "text") {
         renderText(result, note);
+    } else if (note.type === "code" && note.mime === "text/x-markdown") {
+        renderMarkdown(result, note);
     } else if (note.type === "code") {
         renderCode(result);
     } else if (note.type === "mermaid") {
@@ -303,7 +310,8 @@ function renderIndex(result: Result) {
 
     for (const childNote of rootNote.getChildNotes()) {
         const isExternalLink = childNote.hasLabel("shareExternalLink");
-        const href = isExternalLink ? childNote.getLabelValue("shareExternalLink") : `./${childNote.shareId}`;
+        const rawHref = childNote.getLabelValue("shareExternalLink") ?? "";
+        const href = isExternalLink ? escapeHtml(sanitize.sanitizeUrl(rawHref)) : `./${childNote.shareId}`;
         const target = isExternalLink ? `target="_blank" rel="noopener noreferrer"` : "";
         result.content += `<li><a class="${childNote.type}" href="${href}" ${target}>${childNote.escapedTitle}</a></li>`;
     }
@@ -317,6 +325,48 @@ function renderText(result: Result, note: SNote | BNote) {
         blockTextElements: {}
     };
     const document = parse(result.content || "", parseOpts);
+
+    // Process link mentions (inline) — metadata is stored in data attributes.
+    for (const mentionEl of document.querySelectorAll("span.link-mention")) {
+        const url = mentionEl.getAttribute("data-url");
+        if (!url) continue;
+        const title = mentionEl.getAttribute("data-title") || safeHostnameForShare(url);
+        const favicon = mentionEl.getAttribute("data-favicon");
+        const faviconHtml = favicon
+            ? `<img class="link-embed-mention-favicon" src="${escapeHtml(favicon)}" width="16" height="16">`
+            : `<span class="link-embed-mention-dot"></span>`;
+        mentionEl.innerHTML = `<a class="link-embed-mention" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">` +
+            faviconHtml +
+            `<span class="link-embed-mention-title">${escapeHtml(title)}</span></a>`;
+    }
+
+    // Process link embeds (block) — metadata is stored in data attributes.
+    for (const embedEl of document.querySelectorAll("section.link-embed")) {
+        const url = embedEl.getAttribute("data-url");
+        const embedType = embedEl.getAttribute("data-embed-type");
+        if (!url) continue;
+
+        if (embedType === "youtube") {
+            const videoId = extractYouTubeVideoId(url);
+            if (videoId) {
+                embedEl.innerHTML = `<div class="link-embed-video"><iframe src="https://www.youtube-nocookie.com/embed/${escapeHtml(videoId)}?rel=0" frameborder="0" allowfullscreen loading="lazy" referrerpolicy="strict-origin-when-cross-origin" style="width:100%;aspect-ratio:16/9;border:none;"></iframe></div>`;
+            }
+        } else {
+            const title = embedEl.getAttribute("data-title") || safeHostnameForShare(url);
+            const description = embedEl.getAttribute("data-description");
+            const image = embedEl.getAttribute("data-image");
+            const siteName = embedEl.getAttribute("data-site-name") || safeHostnameForShare(url);
+
+            const imageHtml = image
+                ? `<div class="link-embed-card-image-wrapper"><img class="link-embed-card-image" src="${escapeHtml(image)}" alt="" loading="lazy"></div>`
+                : `<div class="link-embed-card-image-wrapper"><div class="link-embed-card-image-placeholder">&#128279;</div></div>`;
+            const descHtml = description ? `<div class="link-embed-card-description">${escapeHtml(description)}</div>` : "";
+
+            embedEl.innerHTML = `<a class="link-embed-card" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">` +
+                imageHtml +
+                `<div class="link-embed-card-content"><div class="link-embed-card-title">${escapeHtml(title)}</div>${descHtml}<div class="link-embed-card-url">${escapeHtml(siteName)}</div></div></a>`;
+        }
+    }
 
     // Process include notes.
     for (const includeNoteEl of document.querySelectorAll("section.include-note")) {
@@ -407,7 +457,8 @@ function handleAttachmentLink(linkEl: HTMLElement, href: string, getNote: GetNot
         const linkedNote = getNote(noteId);
         if (linkedNote) {
             const isExternalLink = linkedNote.hasLabel("shareExternalLink");
-            const href = isExternalLink ? linkedNote.getLabelValue("shareExternalLink") : `./${linkedNote.shareId}`;
+            const rawHref = linkedNote.getLabelValue("shareExternalLink") ?? "";
+            const href = isExternalLink ? sanitize.sanitizeUrl(rawHref) : `./${linkedNote.shareId}`;
             if (href) {
                 linkEl.setAttribute("href", href);
             }
@@ -447,8 +498,40 @@ function cleanUpReferenceLinks(linkEl: HTMLElement, getNote: GetNoteFunction) {
     } else if (note.isProtected) {
         linkEl.innerHTML = "[protected]";
     } else {
-        linkEl.innerHTML = `<span><span class="${note.getIcon()}"></span>${utils.escapeHtml(note.title)}</span>`;
+        linkEl.innerHTML = `<span><span class="${escapeHtml(note.getIcon())}"></span>${utils.escapeHtml(note.title)}</span>`;
     }
+}
+
+/**
+ * Renders a markdown code note by converting the markdown source to HTML
+ * using the shared {@link renderMarkdownToHtml} pipeline.
+ */
+function renderMarkdown(result: Result, note: SNote | BNote) {
+    if (typeof result.content !== "string" || !result.content?.trim()) {
+        result.isEmpty = true;
+        return;
+    }
+
+    const html = renderMarkdownToHtml(result.content, note.title, {
+        sanitize: sanitize.sanitizeHtml,
+        wikiLink: { formatHref: (id) => `./${id}` }
+    });
+
+    // Apply syntax highlighting to code blocks, same as renderText.
+    const parseOpts: Partial<Options> = { blockTextElements: {} };
+    const document = parse(html, parseOpts);
+    for (const codeEl of document.querySelectorAll("pre code")) {
+        if (codeEl.classList.contains("language-mermaid")
+            || codeEl.classList.contains("language-text-x-trilium-auto")) {
+            continue;
+        }
+
+        const highlightResult = highlightAuto(codeEl.text);
+        codeEl.innerHTML = highlightResult.value;
+        codeEl.classList.add("hljs");
+    }
+
+    result.content = document.innerHTML;
 }
 
 /**
@@ -484,7 +567,7 @@ function renderImage(result: Result, note: SNote | BNote) {
 
 function renderFile(note: SNote | BNote, result: Result) {
     if (note.mime === "application/pdf") {
-        result.content = `<iframe class="pdf-view" src="../pdfjs/web/viewer.html?file=../../../share/api/notes/${note.noteId}/view"></iframe>`;
+        result.content = `<iframe class="pdf-view" src="api/notes/${note.noteId}/view"></iframe>`;
     } else {
         result.content = `<button type="button" onclick="location.href='api/notes/${note.noteId}/download'">Download file</button>`;
     }
@@ -502,7 +585,13 @@ function renderWebView(note: SNote | BNote, result: Result) {
     const url = note.getLabelValue("webViewSrc");
     if (!url) return;
 
-    result.content = `<iframe class="webview" src="${sanitizeUrl(url)}" sandbox="allow-same-origin allow-scripts allow-popups"></iframe>`;
+    result.content = `<iframe class="webview" src="${sanitize.sanitizeUrl(url)}" sandbox="allow-same-origin allow-scripts allow-popups"></iframe>`;
+}
+
+
+
+function safeHostnameForShare(url: string): string {
+    try { return new URL(url).hostname; } catch { return url; }
 }
 
 export default {

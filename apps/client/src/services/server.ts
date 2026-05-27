@@ -1,26 +1,12 @@
+import { t } from "./i18n.js";
 import utils, { isShare } from "./utils.js";
 import ValidationError from "./validation_error.js";
 
 type Headers = Record<string, string | null | undefined>;
 
-type Method = string;
-
 interface Response {
     headers: Headers;
     body: unknown;
-}
-
-interface Arg extends Response {
-    statusCode: number;
-    method: Method;
-    url: string;
-    requestId: string;
-}
-
-interface RequestData {
-    resolve: (value: unknown) => any;
-    reject: (reason: unknown) => any;
-    silentNotFound: boolean;
 }
 
 export interface StandardResponse {
@@ -32,8 +18,7 @@ async function getHeaders(headers?: Headers) {
         return {};
     }
 
-    const appContext = (await import("../components/app_context.js")).default;
-    const activeNoteContext = appContext.tabManager ? appContext.tabManager.getActiveContext() : null;
+    const activeNoteContext = glob.appContext?.tabManager ? glob.appContext.tabManager.getActiveContext() : null;
 
     // headers need to be lowercase because node.js automatically converts them to lower case
     // also avoiding using underscores instead of dashes since nginx filters them out by default
@@ -48,11 +33,6 @@ async function getHeaders(headers?: Headers) {
         if (headers[headerName]) {
             allHeaders[headerName] = headers[headerName];
         }
-    }
-
-    if (utils.isElectron()) {
-        // passing it explicitly here because of the electron HTTP bypass
-        allHeaders.cookie = document.cookie;
     }
 
     return allHeaders;
@@ -118,10 +98,6 @@ async function upload(url: string, fileToUpload: File, componentId?: string, met
     }
 }
 
-let idCounter = 1;
-
-const idToRequestMap: Record<string, RequestData> = {};
-
 let maxKnownEntityChangeId = 0;
 
 let csrfRefreshInProgress: Promise<void> | null = null;
@@ -176,35 +152,16 @@ interface CallOptions {
 }
 
 async function call<T>(method: string, url: string, componentId?: string, options: CallOptions = {}) {
-    let resp;
-
     const headers = await getHeaders({
         "trilium-component-id": componentId
     });
     const { data } = options;
 
-    if (utils.isElectron()) {
-        const ipc = utils.dynamicRequire("electron").ipcRenderer;
-        const requestId = idCounter++;
-
-        resp = (await new Promise((resolve, reject) => {
-            idToRequestMap[requestId] = {
-                resolve,
-                reject,
-                silentNotFound: !!options.silentNotFound
-            };
-
-            ipc.send("server-request", {
-                requestId,
-                headers,
-                method,
-                url: `/${window.glob.baseApiUrl}${url}`,
-                data
-            });
-        })) as any;
-    } else {
-        resp = await ajax(url, method, data, headers, options);
-    }
+    // In Electron the page is loaded from the `trilium-app://` custom
+    // protocol, whose handler routes everything through the same Express
+    // app the browser build talks to over HTTP. So a single $.ajax path
+    // covers both — no IPC bridge needed.
+    const resp = await ajax(url, method, data, headers, options);
 
     const maxEntityChangeIdStr = resp.headers["trilium-max-entity-change-id"];
 
@@ -270,7 +227,11 @@ function ajax(url: string, method: string, data: unknown, headers: Headers, opts
                 } else if (opts.silentInternalServerError && jqXhr.status === 500) {
                     // report nothing
                 } else {
-                    await reportError(method, url, jqXhr.status, jqXhr.responseText);
+                    try {
+                        await reportError(method, url, jqXhr.status, jqXhr.responseText);
+                    } catch {
+                        // reportError may throw (e.g. ValidationError); ensure rej() is still called below.
+                    }
                 }
 
                 rej(jqXhr.responseText);
@@ -294,42 +255,6 @@ function ajax(url: string, method: string, data: unknown, headers: Headers, opts
     });
 }
 
-if (utils.isElectron()) {
-    const ipc = utils.dynamicRequire("electron").ipcRenderer;
-
-    ipc.on("server-response", async (_, arg: Arg) => {
-        if (arg.statusCode >= 200 && arg.statusCode < 300) {
-            handleSuccessfulResponse(arg);
-        } else {
-            if (arg.statusCode === 404 && idToRequestMap[arg.requestId]?.silentNotFound) {
-                // report nothing
-            } else {
-                await reportError(arg.method, arg.url, arg.statusCode, arg.body);
-            }
-
-            idToRequestMap[arg.requestId].reject(new Error(`Server responded with ${arg.statusCode}`));
-        }
-
-        delete idToRequestMap[arg.requestId];
-    });
-
-    function handleSuccessfulResponse(arg: Arg) {
-        if (arg.headers["Content-Type"] === "application/json" && typeof arg.body === "string") {
-            arg.body = JSON.parse(arg.body);
-        }
-
-        if (!(arg.requestId in idToRequestMap)) {
-            // this can happen when reload happens between firing up the request and receiving the response
-            throw new Error(`Unknown requestId '${arg.requestId}'`);
-        }
-
-        idToRequestMap[arg.requestId].resolve({
-            body: arg.body,
-            headers: arg.headers
-        });
-    }
-}
-
 async function reportError(method: string, url: string, statusCode: number, response: unknown) {
     let message = response;
 
@@ -340,6 +265,7 @@ async function reportError(method: string, url: string, statusCode: number, resp
         } catch (e) {}
     }
 
+    // Dynamic import to avoid circular dependency (toast → app_context → options → server).
     const toastService = (await import("./toast.js")).default;
 
     const messageStr = (typeof message === "string" ? message : JSON.stringify(message)) || "-";
@@ -353,7 +279,6 @@ async function reportError(method: string, url: string, statusCode: number, resp
             ...response
         });
     } else {
-        const { t } = await import("./i18n.js");
         if (statusCode === 400 && (url.includes("%23") || url.includes("%2F"))) {
             toastService.showPersistent({
                 id: "trafik-blocked",
@@ -367,8 +292,7 @@ async function reportError(method: string, url: string, statusCode: number, resp
                 t("server.unknown_http_error_content", { statusCode, method, url, message: messageStr }),
                 15_000);
         }
-        const { logError } = await import("./ws.js");
-        logError(`${statusCode} ${method} ${url} - ${message}`);
+        window.logError(`${statusCode} ${method} ${url} - ${message}`);
     }
 }
 
